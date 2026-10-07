@@ -15,7 +15,6 @@ import (
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 	template "github.com/max-messenger/max-message-template-go"
 	"github.com/max-messenger/maxbot"
-	"go.uber.org/zap"
 )
 
 var safePayload = regexp.MustCompile(`^[a-zA-Z0-9_\-/]+$`)
@@ -34,15 +33,18 @@ type API interface {
 	EditMessage(ctx context.Context, messageID string, body model.NewMessageBody) (model.SimpleQueryResult, error)
 }
 
-var ErrContextDirEmpty = fmt.Errorf("context directory is empty")
+var (
+	ErrContextDirEmpty  = fmt.Errorf("context directory is empty")
+	ErrTraversalAttempt = fmt.Errorf("path traversal attempt")
+	ErrNotFound         = fmt.Errorf("page not found")
+)
 
 type Pages struct {
 	contextDir string
-	logger     *zap.Logger
 	values     template.Values
 }
 
-func New(contentDir string, uploader UploadAPI, log *zap.Logger) (*Pages, error) {
+func New(contentDir string, uploader UploadAPI) (*Pages, error) {
 	if contentDir == "" {
 		return nil, ErrContextDirEmpty
 	}
@@ -56,7 +58,6 @@ func New(contentDir string, uploader UploadAPI, log *zap.Logger) (*Pages, error)
 
 	return &Pages{
 		contextDir: contentDir,
-		logger:     log.Named("gomaxpages"),
 		values:     values,
 	}, nil
 }
@@ -69,7 +70,10 @@ func (p *Pages) Handle(ctx maxbot.Context) error {
 		handle = ctx.Send
 	}
 
-	body, attachments := p.sendOrEdit(payload)
+	body, attachments, err := p.sendOrEdit(payload)
+	if err != nil {
+		return err
+	}
 
 	return handle(body, maxbot.WithFormat(model.FormatMarkdown), maxbot.WithAttachments(attachments))
 }
@@ -82,7 +86,10 @@ func (p *Pages) HandleApi(ctx context.Context, api API, update model.Update) err
 		isSend = true
 	}
 
-	body, attachments := p.sendOrEdit(payload)
+	body, attachments, err := p.sendOrEdit(payload)
+	if err != nil {
+		return err
+	}
 
 	msg := maxClient.NewMessage()
 	msg.SetChat(update.ChatID)
@@ -91,7 +98,7 @@ func (p *Pages) HandleApi(ctx context.Context, api API, update model.Update) err
 	msg.AddAttachments(attachments)
 
 	if isSend {
-		_, err := api.Send(ctx, msg)
+		_, err = api.Send(ctx, msg)
 
 		return err
 	}
@@ -101,12 +108,12 @@ func (p *Pages) HandleApi(ctx context.Context, api API, update model.Update) err
 		messageBody.Attachments = attachments
 	}
 
-	_, err := api.EditMessage(ctx, update.MessageID, messageBody)
+	_, err = api.EditMessage(ctx, update.MessageID, messageBody)
 
 	return err
 }
 
-func (p *Pages) sendOrEdit(payload string) (body string, attachments []model.Attachment) {
+func (p *Pages) sendOrEdit(payload string) (body string, attachments []model.Attachment, err error) {
 	sanitized := p.sanitize(payload)
 	if sanitized == "" {
 		return
@@ -114,7 +121,6 @@ func (p *Pages) sendOrEdit(payload string) (body string, attachments []model.Att
 
 	pagePath := p.filePath(sanitized)
 
-	// защита от выхода за пределы content/
 	absPage, err := filepath.Abs(pagePath)
 	if err != nil {
 		return
@@ -124,14 +130,14 @@ func (p *Pages) sendOrEdit(payload string) (body string, attachments []model.Att
 		return
 	}
 	if !strings.HasPrefix(absPage, absRoot+string(os.PathSeparator)) {
-		p.logger.Debug("path traversal attempt", zap.String("payload", payload))
+		err = ErrTraversalAttempt
 
 		return
 	}
 
 	content, err := os.ReadFile(pagePath)
 	if err != nil {
-		p.logger.Debug("page not found", zap.String("payload", payload))
+		err = ErrNotFound
 
 		return
 	}
