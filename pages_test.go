@@ -1,4 +1,4 @@
-package maxpages
+package gomaxpages
 
 import (
 	"context"
