@@ -1,87 +1,128 @@
-# Контекст для статических callback-страниц
+# gomaxpages
 
-Каждый `.md`-файл в этой директории — это страница, которая отображается пользователю при нажатии на кнопку с соответствующим `payload`.
+Библиотека для ботов MAX Messenger, которая превращает набор `.md`-файлов в многостраничный интерфейс:
+страницы с inline-кнопками, навигация по callback-ам и автоматическая загрузка вложений.
 
-## Именование файлов
+Работает как с фреймворком [`maxbot`](https://github.com/max-messenger/maxbot), так и напрямую с
+API-клиентом [`max-bot-api-client-go`](https://github.com/max-messenger/max-bot-api-client-go).
 
-Имя файла без расширения должно совпадать с `payload` кнопки. Payload проходит sanitization — разрешены только `^[a-zA-Z0-9_\-/]+$`.
+## Установка
 
-Пример: файл `terms.md` обрабатывает callback с `payload = "terms"`.
-
-Вложенные страницы поддерживаются через поддиректории: файл `legal/terms.md` обрабатывает callback с `payload = "legal/terms"`.
-
-Если `payload` пустой, отображается стартовая страница `start.md`.
-
-## Формат файлов
-
-Файлы используют формат, поддерживаемый `pkg/maxbot-template-go`:
-
-```
-Текст сообщения с {user_id}
----
-[Кнопка1](cb:payload1), [Кнопка2](cb:payload2)
-[Ссылка](https://example.com)
+```bash
+go get github.com/max-messenger/gomaxpages
 ```
 
-- `{user_id}` — подставляется `update.UserID`
-- `{chat_id}` — подставляется `update.ChatID`
-- `---` — разделитель между телом сообщения и клавиатурой
-- Кнопки: `[имя](вызов)` с поддержкой `cb:`, `http://`, `geo:`, `contact:`, `app:`, `msg:`, `clip:`
-
-## Вложения
-
-Файлы из директории `content/` автоматически загружаются в MAX и подставляются в шаблоны по относительному пути. Поддерживаются следующие типы:
-
-- `.jpg`, `.jpeg`, `.png` — изображения
-- `.mp4` — видео
-- `.mp3` — аудио
-- остальные расширения — как файлы
-
-Загруженные токены кэшируются в файле `.index` в корне `content/`. При повторном запуске уже загруженные файлы повторно не отправляются. Если файл был изменён, удалите соответствующую запись из `.index` (или весь файл) для повторной загрузки.
-
-Загрузка выполняется при инициализации `Pages` с таймаутом 5 минут.
-
-## Активация
-
-Добавьте флаг `--context ./context` при запуске приложения:
-
-```sh
-./maxbook -c config.yaml --context ./context
-```
-
-Без этого флага функция статических callback-страниц выключена.
+Требования: Go 1.25+.
 
 ## Быстрый старт
 
-Перед запуском необходимо скопировать конфиг в папку dev:
+```go
+bot, err := maxbot.NewApi(os.Getenv("BOT_TOKEN"))
+if err != nil {
+	log.Fatal(err)
+}
 
-```shell
-mkdir -p dev && cp config.yaml ./dev/config.yaml
+pages, err := maxpages.New("./demo", bot.Client().Upload)
+if err != nil {
+	log.Fatal(err)
+}
+
+bot.Handle(maxbot.OnBotStarted, pages.Handle)
+bot.Handle(maxbot.OnMessageCallback, pages.Handle)
+
+bot.Start()
 ```
 
-В конфиг подставить реальный токен бота. После этого можно запустить:
+Без `maxbot` — через `HandleApi` с любым типом, реализующим `Send` и `EditMessage` (например, `api.Messages`):
 
-```shell
-go run ./cmd/maxbook -c dev/config.onboarding.yaml --context ./content/onboarding
+```go
+api, err := maxClient.NewApi(os.Getenv("BOT_TOKEN"))
+if err != nil {
+	log.Fatal(err)
+}
+
+pages, err := maxpages.New("./demo", api.Upload)
+if err != nil {
+	log.Fatal(err)
+}
+
+switch update.UpdateType {
+case model.UpdateBotStarted, model.UpdateMessageCallback:
+	err = pages.HandleApi(ctx, api.Messages, update)
+}
 ```
 
-## Структура директории контекста
+Полный пример обоих режимов — в [`example/`](./example).
+
+## API
+
+| Сигнатура | Назначение |
+|---|---|
+| `New(contentDir string, uploader UploadAPI) (*Pages, error)` | Загружает вложения из `contentDir/content/` и создаёт `Pages` |
+| `(*Pages).Handle(ctx maxbot.Context) error` | Обработчик для `maxbot` |
+| `(*Pages).HandleApi(ctx context.Context, api API, update model.Update) error` | Обработчик для «чистого» API-клиента |
+
+Логика обработчиков одинакова: пустой `payload` (старт бота) — страница `start.md` отправляется новым
+сообщением, любой другой `payload` (нажатие кнопки) — соответствующая страница редактирует текущее сообщение.
+
+Ошибки: `ErrContextDirEmpty` (пустой `contentDir`), `ErrTraversalAttempt` (выход за пределы `contentDir`),
+`ErrNotFound` (страница отсутствует).
+
+## Структура директории
 
 ```
-content/onboarding/
-├── .index              # кэш загруженных файлов (создаётся автоматически)
+demo/
 ├── start.md            # стартовая страница (payload = "")
-├── terms.md            # payload = "terms"
+├── names.md            # payload = "names"
 ├── legal/
 │   └── privacy.md      # payload = "legal/privacy"
-└── img/
-    └── logo.png        # доступен как {img/logo.png} в шаблонах
+└── content/            # вложения, загружаются в MAX при New()
+    ├── .index          # кэш токенов (создаётся автоматически)
+    └── head.jpg        # доступен в шаблонах как head.jpg
 ```
+
+Имя файла без расширения `.md` совпадает с `payload` кнопки; вложенные директории задаются через `/`.
+
+## Формат страницы
+
+Файлы используют формат [`max-message-template-go`](https://github.com/max-messenger/max-message-template-go):
+
+```
+image:head.jpg
+file:price.pdf
+
+===
+
+Текст страницы с подстановкой {ключ}
+---
+[Вперёд](cb:names), [Назад](cb:start)
+[Сайт](https://max.ru)
+```
+
+- `===` — отделяет блок вложений от тела страницы;
+- `---` — отделяет тело от клавиатуры;
+- `[имя](вызов)` — кнопка, в одной строке несколько кнопок разделяются запятой;
+- `{ключ}` — подстановка значения из вложений.
+
+Типы кнопок: `cb:`, `http(s)://`, `geo:`, `contact:`, `app:`, `msg:`, `clip:`.
+
+## Вложения
+
+Все файлы из `content/` загружаются в MAX при вызове `New` (таймаут 5 минут, до 3 попыток на файл).
+Тип загрузки выбирается по расширению: `.jpg`/`.jpeg`/`.png` — изображение, `.mp4` — видео,
+`.mp3` — аудио, остальные — файл.
+
+Полученные токены кэшируются в `content/.index` в формате `относительный/путь:токен`, поэтому при
+повторном запуске файлы не загружаются заново. Изменили файл — удалите его строку из `.index`
+(или весь файл).
+
+В шаблоне вложение подключается директивой с относительным путём от `content/`:
+`image:`, `video:`, `audio:`, `file:`, `sticker:`, либо прямой ссылкой `http(s)://`.
 
 ## Безопасность
 
-- Payload валидируется регулярным выражением `^[a-zA-Z0-9_\-/]+$`.
-- Дополнительно отсекаются пустые сегменты и `..` для предотвращения path traversal.
-- Итоговый путь проверяется на принадлежность `contextDir`.
+- `payload` проверяется регулярным выражением `^[a-zA-Z0-9_\-/]+$`;
+- сегменты `..` и пустые сегменты отбрасываются;
+- итоговый путь проверяется на принадлежность `contentDir`.
 
-Некорректный payload молча игнорируется (страница не отображается), отсутствующий файл возвращает `ErrNotFound`.
+Некорректный `payload` приводит к пустому ответу (страница не показывается), отсутствующий файл — к `ErrNotFound`.

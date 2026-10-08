@@ -1,36 +1,39 @@
-# Max Messenger Bot с поддержкой страниц
+# Пример бота MAX со страницами
 
-Пример бота для мессенджера MAX с поддержкой многостраничных интерфейсов (страниц), реализованного на Go с использованием библиотек
-`maxbot`, `max-bot-api-client-go` и `gomaxpages`.
+Запускаемый пример бота для мессенджера MAX с многостраничным интерфейсом на базе
+[`gomaxpages`](../README.md), `maxbot` и `max-bot-api-client-go`.
 
-## Описание
+Пример показывает два способа подключения библиотеки:
 
-Проект демонстрирует два подхода к созданию бота:
+1. **`maxBot`** — высокоуровневый: фреймворк `maxbot` сам ведёт long-polling и вызывает обработчики событий.
+2. **`maxClient`** — низкоуровневый: прямая работа с API-клиентом, long-polling и диспетчеризация обновлений вручную.
 
-1. **`maxBot`** — высокоуровневый подход с использованием фреймворка `maxbot` (обработчики событий, встроенный цикл получения обновлений).
-2. **`maxClient`** — низкоуровневый подход с прямым использованием API-клиента `max-bot-api-client-go` (ручное управление long-polling и
-   обработкой обновлений).
-
-Оба подхода используют библиотеку `gomaxpages` для организации многостраничных сценариев (страницы с кнопками, навигация, callback-и).
-
-## Структура проекта
+## Структура
 
 ```
-.
-├── main.go          # основной файл с примерами
-└── demo/            # директория с контентом страниц (создаётся вручную)
-    └── ...          # файлы описания страниц
+example/
+├── main.go             # оба режима работы
+└── demo/               # контент страниц (уже в репозитории)
+    ├── start.md        # стартовая страница (payload = "")
+    ├── names.md        # payload = "names"
+    ├── attachment.md   # payload = "attachment"
+    └── content/        # вложения, загружаются в MAX при старте
+        ├── .index      # кэш токенов загрузок
+        └── head.jpg
 ```
 
-> Директория `./demo` должна содержать контент страниц, используемый библиотекой `gomaxpages`. Путь вычисляется относительно расположения
-`main.go`.
+Путь к `demo/` в `main.go` вычисляется от расположения самого `main.go` (`runtime.Caller`), поэтому
+пример можно запускать из любой директории.
+
+Формат `.md`-страниц описан в [корневом README](../README.md#формат-страницы).
 
 ## Требования
 
-- Go 1.21+ (или версия, требуемая зависимостями)
-- Токен бота MAX, полученный у [@MasterBot](https://max.ru/)
+- Go 1.25+
+- Токен бота MAX — [получение токена](https://dev.max.ru/docs/chatbots/bots-create/manage#%D0%9F%D0%BE%D0%BB%D1%83%D1%87%D0%B5%D0%BD%D0%B8%D0%B5%20%D1%82%D0%BE%D0%BA%D0%B5%D0%BD%D0%B0%20%D0%B1%D0%BE%D1%82%D0%B0)
 
-## Зависимости
+Пример входит в основной модуль `github.com/max-messenger/gomaxpages`, поэтому зависимости уже
+объявлены в `go.mod`. Команды ниже нужны, только если вы копируете пример в собственный проект:
 
 ```bash
 go get github.com/max-messenger/gomaxpages
@@ -40,42 +43,53 @@ go get github.com/max-messenger/maxbot
 
 ## Настройка
 
-Установите переменную окружения с токеном бота:
-
 ```bash
 export BOT_TOKEN="ваш_токен_бота"
 ```
 
-## Запуск
+Токены вложений привязаны к загрузившему их боту, поэтому перед запуском со своим `BOT_TOKEN`
+сбросьте кэш — иначе `head.jpg` не прикрепится:
 
-В функции `main` выберите нужный режим — раскомментируйте один из вызовов:
+```bash
+rm -f example/demo/content/.index
+```
+
+При следующем старте файлы из `demo/content/` загрузятся заново, а `.index` пересоздастся.
+
+## Выбор режима
+
+В `main()` оставьте нужный вызов:
 
 ```go
 func main() {
-// ...
-maxBot(contentDir)
-// или
-//maxClient(contentDir)
+	// ...
+	maxBot(contentDir)
+	// или
+	//maxClient(contentDir)
 }
 ```
 
-Затем выполните:
+## Запуск
 
 ```bash
-go run main.go
+go run ./example        # из корня репозитория
+# или
+cd example && go run .
 ```
 
-## Режимы работы
-
-### Режим `maxBot` (рекомендуемый)
-
-Использует фреймворк `maxbot` для декларативной обработки событий:
+## Режим `maxBot` (рекомендуемый)
 
 ```go
 bot, err := maxbot.NewApi(os.Getenv("BOT_TOKEN"),
-maxbot.WithHTTPClient(&http.Client{Timeout: 25 * time.Second}))
+	maxbot.WithHTTPClient(&http.Client{Timeout: 25 * time.Second}))
+if err != nil {
+	log.Fatal(err)
+}
 
 pages, err := maxpages.New(contentDir, bot.Client().Upload)
+if err != nil {
+	log.Fatal(err)
+}
 
 bot.Handle(maxbot.OnBotStarted, pages.Handle)
 bot.Handle(maxbot.OnMessageCallback, pages.Handle)
@@ -83,45 +97,60 @@ bot.Handle(maxbot.OnMessageCallback, pages.Handle)
 bot.Start()
 ```
 
-Обрабатываются события:
+Обрабатываемые события:
 
-- `OnBotStarted` — запуск бота пользователем (обычно `/start`).
-- `OnMessageCallback` — нажатие inline-кнопок на страницах.
+- `OnBotStarted` — пользователь запустил бота;
+- `OnMessageCallback` — нажатие inline-кнопки на странице.
 
-### Режим `maxClient`
+## Режим `maxClient`
 
-Ручной long-polling через `api.Subscriptions.GetUpdates` с обработкой обновлений в цикле:
+Ручной long-polling через `api.Subscriptions.GetUpdates` и диспетчеризация обновлений в цикле:
 
 ```go
-for {
-updates, marker, err = api.Subscriptions.GetUpdates(ctx, marker)
-// ...
-for _, update := range updates {
-handle(ctx, update)
+pages, err := maxpages.New(contentDir, api.Upload)
+if err != nil {
+	log.Fatal(err)
 }
+
+for {
+	updates, marker, err = api.Subscriptions.GetUpdates(ctx, marker)
+	if _, tErr := errors.AsType[*maxClinet.TimeoutError](err); tErr {
+		continue
+	}
+	if err != nil {
+		log.Println("GetUpdates: ", err)
+
+		return
+	}
+
+	for _, update := range updates {
+		handle(ctx, update)
+	}
 }
 ```
 
-Особенности:
+Внутри `handle` страницы обрабатываются через `pages.HandleApi(ctx, api.Messages, update)`.
 
-- Корректно обрабатывается `TimeoutError` (продолжает цикл без выхода).
-- Поддерживается отмена через `context.WithCancel`.
-- Выводятся все входящие обновления в формате `[тип] {данные}`.
+Особенности режима:
+
+- `TimeoutError` не прерывает цикл;
+- поддерживается отмена через `context.WithCancel`;
+- все входящие обновления печатаются в формате `[тип] {данные}`.
 
 ## Обрабатываемые типы обновлений
 
-| Тип                           | Описание                   |
-|-------------------------------|----------------------------|
-| `model.UpdateBotStarted`      | Пользователь запустил бота |
-| `model.UpdateMessageCallback` | Нажатие inline-кнопки      |
+| Тип                           | Описание                                    |
+|-------------------------------|---------------------------------------------|
+| `model.UpdateBotStarted`      | Пользователь запустил бота                  |
+| `model.UpdateMessageCallback` | Нажатие inline-кнопки                       |
 
-## Лицензия
+Для `UpdateBotStarted` (`payload` пустой) страница `start.md` отправляется новым сообщением,
+для `UpdateMessageCallback` — найденная по `payload` страница редактирует текущее сообщение.
 
-См. лицензии используемых библиотек:
+## Проверка
 
-- [max-messenger/gomaxpages](https://github.com/max-messenger/gomaxpages)
-- [max-messenger/max-bot-api-client-go](https://github.com/max-messenger/max-bot-api-client-go)
-- [max-messenger/maxbot](https://github.com/max-messenger/maxbot)
+В MAX откройте бота и нажмите «Начать»: придёт `start.md` с картинкой и кнопками
+«Именование файлов» и «Вложение», которые переключают страницы.
 
 ## Полезные ссылки
 
